@@ -1,4 +1,3 @@
-
 def parseQuranMetadata(resourceFile):
     import json
     with open(resourceFile) as f:
@@ -20,6 +19,64 @@ def parseQuranTokens(corpusFile):
             if token not in tokens[sure][aye][kalame]: tokens[sure][aye][kalame][token] = features
     return tokens
 
+def getLemAyat(tokens):
+    lems = {}
+    roots = {}
+    for sure in tokens.keys():
+        for aye in tokens[sure].keys():
+            for kalame in tokens[sure][aye].keys():
+                for token in tokens[sure][aye][kalame].keys():
+                    if "LEM" in tokens[sure][aye][kalame][token]:
+                        lem = tokens[sure][aye][kalame][token]["LEM"]
+                        if lem not in lems:
+                            lems[lem] = []
+                        lems[lem].append(int(aye)+ int(sure)*1000)
+                        if "ROOT" in tokens[sure][aye][kalame][token]:
+                            root = tokens[sure][aye][kalame][token]["ROOT"]
+                            if lem not in roots:
+                                roots[lem] = root
+
+    return {"lems":lems,"roots":roots}
+def getLemGraph(lems):
+    import math
+    graph = {}
+    for a in lems["lems"]:
+        graph[a] = {}
+        for b in lems["lems"]:
+            if a is b:
+                graph[a][b] = 1
+            elif a in lems["roots"] and b in lems["roots"] and lems["roots"][a] == lems["roots"][b]:
+                graph[a][b] = 1
+            elif b in graph:
+                if a in graph[b]:
+                    graph[a][b] = graph[b][a]
+            else:
+                tm = [x for x in lems["lems"][a] if x in lems["lems"][b]]
+                if len(tm)>0:
+                    graph[a][b] = len(tm) / math.sqrt(len(lems["lems"][a])*len(lems["lems"][b]))
+    # ngraph = {}
+    # for i in roots:
+    #     for j in roots:
+    #         if i not in ngraph: ngraph[i] = {}
+    #         if j not in ngraph[i]:
+    #             if j in graph[i]: ngraph[i][j] =  min(10000,1/graph[i][j])
+    #
+    # for k in roots:
+    #     print(k, end=", ")
+    #     for i in roots:
+    #         for j in roots:
+    #             if k in ngraph[i] and j in ngraph[k]:
+    #                 d = ngraph[i][k] + ngraph[k][j]
+    #                 if j not in ngraph[i] or d < ngraph[i][j]:
+    #                     ngraph[i][j] = ngraph[i][k] + ngraph[k][j]
+    # for i in roots:
+    #     for j in roots:
+    #         if j in ngraph[i]:
+    #             ngraph[i][j] =  1/ngraph[i][j]
+
+    return graph
+
+
 def getRootAyat(tokens):
     roots = {}
     for sure in tokens.keys():
@@ -30,7 +87,7 @@ def getRootAyat(tokens):
                         root = tokens[sure][aye][kalame][token]["ROOT"]
                         if root not in roots:
                             roots[root] = []
-                        roots[root].append(aye + sure*1000)#token + (kalame + (aye + sure*1000)*1000)*10)
+                        roots[root].append(int(aye) + int(sure)*1000)#token + (kalame + (aye + sure*1000)*1000)*10)
     return roots
 
 def getRootGraph(roots):
@@ -48,24 +105,44 @@ def getRootGraph(roots):
                 tm = [x for x in roots[a] if x in roots[b]]
                 if len(tm)>0:
                     graph[a][b] = len(tm) / math.sqrt(len(roots[a])*len(roots[b]))
-    return graph
+    ngraph = {}
+    for i in roots:
+        for j in roots:
+            if i not in ngraph: ngraph[i] = {}
+            if j not in ngraph[i]:
+                if j in graph[i]: ngraph[i][j] =  min(10000,1/graph[i][j])
 
-def ayeSimilarity(graph,a,b):
+    for k in roots:
+        print(k, end=", ")
+        for i in roots:
+            for j in roots:
+                if k in ngraph[i] and j in ngraph[k]:
+                    d = ngraph[i][k] + ngraph[k][j]
+                    if j not in ngraph[i] or d < ngraph[i][j]:
+                        ngraph[i][j] = ngraph[i][k] + ngraph[k][j]
+    for i in roots:
+        for j in roots:
+            if j in ngraph[i]:
+                ngraph[i][j] =  1/ngraph[i][j]
+
+    return ngraph
+
+def ayeSimilarity(feature,graph,a,b):
     import math
     d = 0
     for wordA in a.keys():
         for tokenA in a[wordA].keys():
             for wordB in b.keys():
                 for tokenB in b[wordB].keys():
-                    if "ROOT" in a[wordA][tokenA] and "ROOT" in b[wordB][tokenB]:
+                    if feature in a[wordA][tokenA] and feature in b[wordB][tokenB]:
                         try:
-                            d = d + graph[ a[wordA][tokenA]["ROOT"] ][ b[wordB][tokenB]["ROOT"] ]
+                            d = d + graph[ a[wordA][tokenA][feature] ][ b[wordB][tokenB][feature] ]
                         except:
                             pass
     d = d / math.sqrt(len(a)*len(b))
     return d
 
-def siaqSimilarity(graph,s1,s11,s12,s2,s21,s22):
+def siaqSimilarity(feature,graph,s1,s11,s12,s2,s21,s22):
     d = 0
     for ayeA in s1:
         if int(ayeA) < s11 or int(ayeA) >  s12:
@@ -73,27 +150,30 @@ def siaqSimilarity(graph,s1,s11,s12,s2,s21,s22):
         for ayeB in s2:
             if int(ayeB) <s21 or int(ayeB) > s22:
                 continue
-            d = d + ayeSimilarity(graph,s1[ayeA],s2[ayeB])
+            d = d + ayeSimilarity(feature,graph,s1[ayeA],s2[ayeB])
     d = d / ((s12-s11+1) * (s22-s21 + 1))
     return d
 
-def sureSelfSimilarity(graph, metadata, tokens, sure):
+def sureSelfSimilarity(feature, graph, metadata, tokens, sure):
     r = {}
     s = tokens[sure]
     ayat = list(s.keys())
     ayat.sort()
+    sureGraph = {}
     for ayeA in ayat:
         r[ayeA] = 0
+        sureGraph[ayeA] = {}
         for ayeB in ayat:
             if ayeA is not ayeB:
-                ts = ayeSimilarity(graph,s[ayeA],s[ayeB])
+                ts = ayeSimilarity(feature,graph,s[ayeA],s[ayeB])
+                sureGraph[ayeA][ayeB] = ts
                 r[ayeA] = r[ayeA] + ts
     sortedAyat = sorted(r, key=r.get)[::-1]
-    print("ayat:",sortedAyat)
+    print("ayat %s:"%sure,sortedAyat)
+    saveGraphToGDF(sureGraph,"%s-ayat.gdf"%sure)
 
     siaqs = sorted([s[1] for s in metadata["Ruku"] if len(s)>0 and s[0] is int(sure)])
     siaqs.append(len(s))
-    print("siaqs:",siaqs)
 
     sq = {}
     for i1 in range(len(siaqs)-1):
@@ -106,10 +186,10 @@ def sureSelfSimilarity(graph, metadata, tokens, sure):
             s21 = siaqs[i2]
             s22 = siaqs[i2+1]-1
 
-            ts = siaqSimilarity(graph,s,s11,s12,s,s21,s22)
+            ts = siaqSimilarity(feature,graph,s,s11,s12,s,s21,s22)
             sq[(s11,s12)] = sq[(s11,s12)] + ts
         sq[(s11,s12)] = sq[(s11,s12)]/(s12-s11+1)
-    print("siaq:",sq)
+    print("siaq %s:"%sure,sq)
     maxsq = max(sq.values())
     siaqAyat = []
     for k in sq:
@@ -117,8 +197,8 @@ def sureSelfSimilarity(graph, metadata, tokens, sure):
             siaqAyat = [ x for x in sortedAyat if ((int(x)>=k[0]) and (int(x)<=k[1])) ]
         sq[k] = sq[k]/maxsq
 
-    print("siaq:",sq)
-    print("best siaq:",siaqAyat)
+    print("siaq:%s"%sure,sq)
+    print("best siaq %s:"%sure,siaqAyat)
 
     return siaqAyat[0]
 
@@ -157,22 +237,39 @@ if __name__ == '__main__':
 
     metadata = parseQuranMetadata("quran-data.js")
 
-    rootfile = "roots.json"
-    if os.path.exists(rootfile):
-        roots = loadFrom(rootfile)
+    #rootfile = "roots.json"
+    #if os.path.exists(rootfile):
+    #    roots = loadFrom(rootfile)
+    #else:
+    #    roots = getRootAyat(tokens)
+    #    saveTo(roots,rootfile)
+    #print("roots:",len(roots))
+
+    lemfile = "lems.json"
+    if os.path.exists(lemfile):
+        lems = loadFrom(lemfile)
     else:
-        roots = getRootAyat(tokens)
-        saveTo(roots,rootfile)
-    print("roots:",len(roots))
+        lems = getLemAyat(tokens)
+        saveTo(lems,lemfile)
+    print("lems:",len(lems["lems"]), "roots:", len(lems["roots"]))
 
 
-    graphfile = "rootgraph.json"
+    # graphfile = "rootgraph.json"
+    # if os.path.exists(graphfile):
+    #     rootGraph = loadFrom(graphfile)
+    # else:
+    #     rootGraph = getRootGraph(roots)
+    #     saveTo(rootGraph,graphfile)
+    #     saveGraphToGDF(rootGraph,"rootGraph.gdf")
+
+    graphfile = "lemgraph.json"
     if os.path.exists(graphfile):
-        rootGraph = loadFrom(graphfile)
+        lemGraph = loadFrom(graphfile)
     else:
-        rootGraph = getRootGraph(roots)
-        saveTo(rootGraph,graphfile)
-        saveGraphToGDF(rootGraph,"rootGraph.gdf")
+        lemGraph = getLemGraph(lems)
+        saveTo(lemGraph,graphfile)
+        saveGraphToGDF(lemGraph,"lemGraph.gdf")
 
-    yasinSims = sureSelfSimilarity(rootGraph, metadata, tokens, "36")
-    yasinSims = sureSelfSimilarity(rootGraph, metadata, tokens, "2")
+
+    sureSelfSimilarity("LEM",lemGraph, metadata, tokens, "36")
+    sureSelfSimilarity("LEM",lemGraph, metadata, tokens, "32")
