@@ -1,0 +1,2 @@
+python rootGraph.py
+pause
